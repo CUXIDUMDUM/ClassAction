@@ -1,0 +1,30 @@
+package Action::Step;
+
+use Moose::Role;
+use namespace::autoclean;
+use Modern::Perl;
+use Data::Dump qw(dump);
+
+sub clone_obj { say "clone_obj";}
+sub reset_obj_state { say "reset obj state";}
+sub state { say "state"; shift->attr(time);}
+sub execute { say "execute" . shift->attr;}
+sub retry_execute { say "retry execute"; }
+sub undo { say "undo";}
+sub retry_undo { say "retry_undo";}
+sub clean_failed_undo { say "clean_failed_undo";}
+sub clean_failed_execute { say "clean_failed_execute";}
+sub exec_stack_runtime_handler {}
+
+package main;
+
+use Class::Action;
+my $ca = Class::Action->new();
+my @steps;
+for my $i ( 1..5 ) {
+    my $o = Action::Step->new(attr => $i);
+    push(@steps, $o);
+}
+$ca->set_steps( [@steps] );
+$ca->execute();
+1;

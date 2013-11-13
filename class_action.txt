@@ -1,0 +1,347 @@
+package Action::Step::Create;
+
+use Moose;
+use namespace::autoclean;
+with 'Action::Step';
+
+sub state { };
+sub
+package Action::Step::Base;
+
+use Moose;
+use namespace::autoclean;
+use Modern::Perl;
+use Data::Dump qw(dump);
+use Clone qw/clone/;
+
+with 'Action::Step';
+
+sub clone_obj {
+    my ($self, %params) = @_;
+    say 'In clone obj';
+    return $self->meta->clone_object($self,%params);
+}
+
+sub reset_obj_state {
+    my ($self) = @_;
+    say 'In reset obj state';
+    for my $attr ( $self->meta->get_all_attributes ) {
+        my $clearer = 'clear_' . $attr;
+        $self->$clearer;
+    }
+}
+
+sub state {
+    my ($self) = @_;
+    #say q(In state ) . ref($self);
+}
+
+sub execute {
+    my ($self) = @_;
+    say 'In execute';
+    return 1;
+}
+
+sub retry_execute {
+    my ($self) = @_;
+    say 'In retry execute';
+    $self->clean_failed_execute;
+    return 1;
+}
+
+sub clean_failed_execute {
+    my ($self) = @_;
+    say 'In clean failed execute';
+    return 1;
+}
+
+sub undo {
+    my ($self) = @_;
+    say 'In undo';
+    return 1;
+}
+
+sub retry_undo {
+    my ($self) = @_;
+    say 'In retry undo';
+    $self->clean_failed_undo;
+    return 1;
+}
+
+sub clean_failed_undo {
+    my ($self) = @_;
+    say 'In clean failed undo';
+    return 1;
+}
+
+sub exec_stack_runtime_handler {
+    my ($self) = @_;
+    #say 'In exec_stack_runtime_handler ' . ref($self);
+    return 1;
+}
+
+1;
+package Action::Step::CreateFile;
+
+use Moose;
+use namespace::autoclean;
+use Modern::Perl;
+extends 'Action::Step::Base';
+use MooseX::Types::Path::Class;
+
+has 'file' => (
+    is => 'ro',
+    isa => 'Path::Class::File',
+    required => 1,
+    coerce => 1,
+);
+
+sub execute {
+    my ($self) = @_;
+    say 'Touching File';
+    $self->file->touch;
+    return -e $self->file->stringify;
+}
+
+sub undo {
+    my ($self) = @_;
+    say 'Removing File';
+    $self->file->remove;
+    $self->clean_failed_undo;
+    return 1;
+}
+
+1;
+package Action::Step::UpdateFile;
+
+use Moose;
+use namespace::autoclean;
+use File::Copy;
+use Modern::Perl;
+use Data::Dump qw(dump);
+extends 'Action::Step::Base';
+use MooseX::Types::Path::Class;
+
+has 'file' => (
+    is => 'ro',
+    isa => 'Path::Class::File',
+    required => 1,
+    coerce => 1,
+);
+
+has 'backup_file' => (
+    is => 'ro',
+    isa => 'Path::Class::File',
+    coerce => 1,
+    lazy_build => 1,
+);
+
+sub _build_backup_file {
+    my ($self) = @_;
+    my $backup_file = $self->file->stringify . '_backup';
+    unlink $backup_file if -e $backup_file;
+    return $backup_file;
+}
+
+sub init {
+    my ($self) = @_;
+    return unless -e $self->file->stringify;
+    File::Copy::copy( $self->file->stringify, $self->backup_file->stringify );
+    return 1;
+}
+
+sub execute {
+    my ($self) = @_;
+    say 'Updating File';
+    return unless $self->init;
+    my $fh = $self->file->opena;
+    print {$fh} "test\n";
+    $fh->close;
+    say $self->file->slurp;
+    return 1;
+}
+
+sub retry_execute {
+    my ($self) = @_;
+    say 'Creating File';
+    $self->file->touch;
+    return 1;
+}
+
+sub restore {
+    my ($self) = @_;
+    File::Copy::copy( $self->backup_file->stringify, $self->file->stringify );
+    return 1;
+}
+
+sub undo {
+    my ($self) = @_;
+    say 'Restoring File';
+    $self->restore;
+    say $self->file->slurp;
+    $self->backup_file->remove;
+    $self->clean_failed_undo;
+    return 1;
+}
+
+1;
+package Action::Step::SetupPerlbrew;
+
+use Moose;
+use namespace::autoclean;
+use File::Copy;
+use Modern::Perl;
+use Data::Dump qw(dump);
+use IPC::Cmd qw(can_run run);
+use File::Temp qw/ tempfile tempdir /;
+
+extends 'Action::Step::Base';
+use MooseX::Types::Path::Class;
+
+has 'perlbrew_root' => (
+    is => 'ro',
+    isa => 'Path::Class::Dir',
+    required => 1,
+    coerce => 1,
+    default => q(/tmp/perlbrew_root),
+);
+
+has 'perlbrew_home' => (
+    is => 'ro',
+    isa => 'Path::Class::Dir',
+    coerce => 1,
+    lazy_build => 1,
+);
+
+has 'tmp_file' => (
+    is => 'ro',
+    isa => 'File::Temp',
+    default => sub { File::Temp->new( SUFFIX => '.dat' ) },
+);
+
+sub _build_perlbrew_home {
+    my ($self) = @_;
+    return $self->perlbrew_root;
+}
+
+sub init {
+    my ($self) = @_;
+    $self->perlbrew_root->mkpath;
+    $self->perlbrew_home->mkpath;
+    $ENV{PERLBREW_ROOT} = $self->perlbrew_root->stringify;
+    $ENV{PERLBREW_HOME} = $self->perlbrew_home->stringify;
+    return 1;
+}
+
+sub get_perlbrew {
+    my ($self) = @_;
+    my $curl = can_run('curl');
+    my $url = q(http://install.perlbrew.pl);
+    my @cmd = ($curl, '-o', $self->tmp_file->filename, '-L', $url);
+    say dump(\%ENV);
+    say "@cmd";
+    return scalar run(command => \@cmd, verbose => 1);
+}
+
+sub install_perlbrew {
+    my ($self) = @_;
+    chmod 0755, $self->tmp_file->filename;
+    my @cmd;
+    @cmd = ('/bin/bash', '-x', $self->tmp_file->filename);
+    $ENV{PERLBREW_ROOT} = $self->perlbrew_root->stringify;
+    $ENV{PERLBREW_HOME} = $self->perlbrew_home->stringify;
+    say dump(\%ENV);
+    return scalar run(command => \@cmd, verbose => 1);
+}
+
+sub execute {
+    my ($self) = @_;
+    $self->get_perlbrew;
+    $self->install_perlbrew;
+    $self->clean_failed_execute;
+    return 1;
+}
+
+sub undo {
+    my ($self) = @_;
+    $self->clean_failed_undo;
+    use File::Path qw(remove_tree);
+    remove_tree($self->perlbrew_root->stringify);
+    return 1;
+}
+
+1;
+package Action::Step;
+
+use Moose::Role;
+use namespace::autoclean;
+use Modern::Perl;
+use Data::Dump qw(dump);
+
+sub clone_obj { say "clone_obj";}
+sub reset_obj_state { say "reset obj state";}
+sub state { say "state"; shift->attr(time);}
+sub execute { say "execute" . shift->attr;}
+sub retry_execute { say "retry execute"; }
+sub undo { say "undo";}
+sub retry_undo { say "retry_undo";}
+sub clean_failed_undo { say "clean_failed_undo";}
+sub clean_failed_execute { say "clean_failed_execute";}
+sub exec_stack_runtime_handler {}
+
+package main;
+
+use Class::Action;
+my $ca = Class::Action->new();
+my @steps;
+for my $i ( 1..5 ) {
+    my $o = Action::Step->new(attr => $i);
+    push(@steps, $o);
+}
+$ca->set_steps( [@steps] );
+$ca->execute();
+1;
+package Action::Step;
+
+use Moose::Role;
+use namespace::autoclean;
+use Modern::Perl;
+use Data::Dump qw(dump);
+
+requires qw(
+    clone_obj
+    reset_obj_state
+    state
+    execute
+    retry_execute
+    clean_failed_execute
+    undo
+    retry_undo
+    clean_failed_undo
+    exec_stack_runtime_handler
+);
+
+1;
+#!/usr/bin/env perl
+#
+
+use strict;
+use warnings;
+use Modern::Perl;
+use Data::Dump qw(dump);
+use Class::Action;
+use FindBin qw($Bin);
+use lib "$Bin/lib";
+use Action::Step::CreateFile;
+use Action::Step::UpdateFile;
+use Action::Step::SetupPerlbrew;
+
+my $ca  = Class::Action->new();
+#my $file = $ARGV[0] // q(/tmp/test.txt);
+#my $o   = Action::Step::CreateFile->new( file => $file );
+##$o->file->remove;
+#my $o1  = Action::Step::UpdateFile->new( file => $o->file );
+my $o = Action::Step::SetupPerlbrew->new();
+$ca->set_steps([ $o ]);
+$ca->execute;
+$ca->undo;
